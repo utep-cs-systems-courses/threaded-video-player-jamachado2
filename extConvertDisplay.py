@@ -4,10 +4,13 @@ import threading, cv2, time, base64
 from threading import Thread, Semaphore
 import numpy as np
 
-global semaphore, queueExtract, queueConvert
-semaphore = Semaphore()
-queueExtract = []
-queueConvert = []
+semExtract   = Semaphore(10)   # Limit our queue to 10
+semConvert   = Semaphore(10)   # Limit our queue to 10
+semDisplay   = Semaphore()
+mutExtract   = threading.Lock()
+mutConvert   = threading.Lock()
+queueExtract = []   # store our frames
+queueConvert = []   # store our converted frames to gray
 
 class extractFrames(Thread):
     def __init__(self):
@@ -20,8 +23,9 @@ class extractFrames(Thread):
         self.maxQueue = 9999
         
     def run(self):
-        global semaphore
+        global semExtract
         global queueExtract
+        global mutExtract
         
         success, image = self.vidcap.read()  # read first iamge
 
@@ -34,19 +38,22 @@ class extractFrames(Thread):
             jpgAsText = base64.b64encode(jpgImage)
 
             #add frame to the queue
-            semaphore.acquire()
+            semExtract.acquire()
+            mutExtract.acquire()
             queueExtract.append(image)
-            #semaphore.release()
+            mutExtract.release()
+            semExtract.release()
 
             success, image = self.vidcap.read()
             print(f'Reading frame {self.count} {success}')
             self.count += 1
-            semaphore.release()
 
             # stop on the last element in the queue
             if self.count == self.maxFramesToLoad:
-                semaphore.acquire()
+                semExtract.acquire()
+                mutExtract.acquire()
                 queueExtract.append(-1)
+                mutExtract.release()
                 semaphore.release()
 
         print('Frame extraction complete.')
@@ -61,24 +68,26 @@ class convertToGrayScale(Thread):
     def run(self):
         global queueExtract
         global queueConvert
-        global semaphore
+        global semConvert
+        global mutConvert
 
         while True:
             if queueExtract and len(queueConvert) <= self.maxQueue:
-                semaphore.acquire()
+                semConvert.acquire()
+                mutConvert.acquire()
                 frame = queueExtract.pop(0)
-                semaphore.release()
+                mutConvert.release()
+                semConvert.release()
 
                 print(f'Converting Frame {self.count}')
 
                 # convert the image to grayscale
                 grayscaleFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-                # add the converted frame into the queueConvert
-                semaphore.acquire()
+                semConvert.acquire()
+                mutConvert.acquire()
                 queueConvert.append(grayscaleFrame)
-                semaphore.release()
-                
+                mutConvert.release()
+                semConvert.release()
                 self.count += 1
                 
         print("Converting to gray scale complete.")
@@ -94,15 +103,15 @@ class displayFrames(Thread):
         
     def run(self):
          global queueConvert
-         global semaphore
-
+         global semDisplay
+         
          while True:
              # go through each frame
              if queueConvert:
                  # get the next frame
-                 semaphore.acquire()
+                 semDisplay.acquire()
                  frame = queueConvert.pop(0)
-                 semaphore.release()
+                 semDisplay.release()
                  
                  print(f'Displaying Frame {self.count}')
                  
@@ -120,6 +129,7 @@ class displayFrames(Thread):
        
         
 filename = 'clip.mp4'
+# run our threads
 extractFrames = extractFrames()
 extractFrames.start()
 
@@ -128,4 +138,3 @@ convertToGrayScale.start()
 
 displayFrames = displayFrames()
 displayFrames.start()
-
