@@ -1,139 +1,118 @@
-#!/usr/bin/env python3
+#! /usr/bin/python3
 
 import threading, cv2, time, base64
 from threading import Thread, Semaphore
-import numpy as np
 
-semExtract   = Semaphore(10)   # Limit our queue to 10
-semConvert   = Semaphore(10)   # Limit our queue to 10
-semDisplay   = Semaphore()
-mutExtract   = threading.Lock()
-mutConvert   = threading.Lock()
-queueExtract = []   # store our frames
-queueConvert = []   # store our converted frames to gray
+class Queue():
+    def __init__(self):
+        self.queue = []
+        self.full = Semaphore(0)
+        self.empty = Semaphore(10) # limits queue to 10
+        self.mutex = threading.Lock()
+        
+    def put(self, frame):
+        self.empty.acquire()
+        self.mutex.acquire()
+        self.queue.append(frame)
+        self.mutex.release()
+        self.full.release()
+    
+    def get(self):
+        self.full.acquire()
+        self.mutex.acquire()
+        frame = self.queue.pop(0)
+        self.mutex.release()
+        self.empty.release()
+        return frame
+    
+    
+queueExtract     = Queue()
+queueConvert     = Queue()
+
 
 class extractFrames(Thread):
-    def __init__(self):
+    def __init__(self):  
         Thread.__init__(self)
-
-        #initialize frane count
+        self.videoCapture = cv2.VideoCapture(filename)
+        # get total frames of the video
+        self.maxFramesToLoad = 9999
+        # initialize the frame count
         self.count = 0
-        self.vidcap = cv2.VideoCapture(filename) # open video file
-        self.maxFramesToLoad = 9999           
-        self.maxQueue = 9999
         
     def run(self):
-        global semExtract
-        global queueExtract
-        global mutExtract
-        
-        success, image = self.vidcap.read()  # read first iamge
+        success, image = self.videoCapture.read()
 
-        print(f'Reading frame {queueExtract} {success}')
-        while success and len(queueExtract) <= self.maxQueue:
-            # get a jpg encoded frame
-            success, jpgImage = cv2.imencode('.jpg', image)
-
-            #encode the frame as base 64 to make debugginf easier
-            jpgAsText = base64.b64encode(jpgImage)
-
-            #add frame to the queue
-            semExtract.acquire()
-            mutExtract.acquire()
-            queueExtract.append(image)
-            mutExtract.release()
-            semExtract.release()
-
-            success, image = self.vidcap.read()
-            print(f'Reading frame {self.count} {success}')
+        while success: 
+            # get the frame
+            queueExtract.put(image)
+          
+            success, image = self.videoCapture.read()
+    
+            print(f'Reading frame {self.count}')
             self.count += 1
 
-            # stop on the last element in the queue
+            # check forthe last element 
             if self.count == self.maxFramesToLoad:
-                semExtract.acquire()
-                mutExtract.acquire()
-                queueExtract.append(-1)
-                mutExtract.release()
-                semaphore.release()
-
-        print('Frame extraction complete.')
-
+                queueExtract.put(-1)
+                break  
+                
+        print('Frame extraction complete')
+            
 class convertToGrayScale(Thread):
-    def __init__(self):
-        Thread.__init__(self)
-        #initialize frame count
-        self.count = 0
-        self.maxQueue = 9999
-
-    def run(self):
-        global queueExtract
-        global queueConvert
-        global semConvert
-        global mutConvert
-
-        while True:
-            if queueExtract and len(queueConvert) <= self.maxQueue:
-                semConvert.acquire()
-                mutConvert.acquire()
-                frame = queueExtract.pop(0)
-                mutConvert.release()
-                semConvert.release()
-
-                print(f'Converting Frame {self.count}')
-
-                # convert the image to grayscale
+        def __init__(self):
+            Thread.__init__(self)
+            # initialize the frame count 
+            self.count = 0
+            
+        def run(self):
+           
+            while True:
+                # get a frame from the first queue
+                frame = queueExtract.get()
+               
+                # converts image to grayscale
                 grayscaleFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                semConvert.acquire()
-                mutConvert.acquire()
-                queueConvert.append(grayscaleFrame)
-                mutConvert.release()
-                semConvert.release()
+                queueConvert.put(grayscaleFrame)
+                
+                print(f'Converting Frame {self.count}')
                 self.count += 1
                 
-        print("Converting to gray scale complete.")
-            
-# Display Class here
+            print('Frame convertion complete')
+
 class displayFrames(Thread):
     def __init__(self):
         Thread.__init__(self)
-        
-        #initialize frame count
-        self.count = 0
+        # delay of 42 ms
         self.delay = 42
-        
-    def run(self):
-         global queueConvert
-         global semDisplay
-         
-         while True:
-             # go through each frame
-             if queueConvert:
-                 # get the next frame
-                 semDisplay.acquire()
-                 frame = queueConvert.pop(0)
-                 semDisplay.release()
-                 
-                 print(f'Displaying Frame {self.count}')
-                 
-                 #display the image in a window called "video" and wait 42
-                 #before displaying the next frame
-                 cv2.imshow('Video', frame)
-                 if cv2.waitKey(self.delay) and 0xFF == ord('q'):
-                     break
+        self.count = 0
 
-                 self.count +=1
-                 
-         print("Display frame complete.")
-         #destory video screen
-         cv2.destroyAllWindows()
-       
+    def run(self):
+
+        while True:
+            # get a grayscale frame
+            frame = queueConvert.get()
+
+            #display the image in a window called "video" and wait 42
+            #before displaying the next frame
+            cv2.imshow('Video', frame)
+            if cv2.waitKey(self.delay) and 0xFF == ord('q'):
+                break
+            self.count += 1
+            
+            print(f'Displaying Frame {self.count}')
+
+                               
+        #destory video screen
+        cv2.destroyAllWindows()
         
+        # signal that this thread has ended his work    
+        print('Frame display complete')
+
 filename = 'clip.mp4'
-# run our threads
 extractFrames = extractFrames()
 extractFrames.start()
 
-convertToGrayScale  = convertToGrayScale()
+convertToGrayScale = convertToGrayScale()
 convertToGrayScale.start()
 
 displayFrames = displayFrames()
